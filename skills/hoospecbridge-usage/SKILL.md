@@ -24,6 +24,8 @@ Use `scan`, then `doctor --target NAME` for read access, then `plan --target NAM
 
 Any conflict prevents the planned batch from applying. Review edited managed content before choosing explicit push. Keep human notes outside the bracketed HooSpecBridge markers; Jira markers must remain separate top-level paragraphs. An initial/recovered completion mismatch needs explicit direction. Configure workflow-specific `doneTransition` / `openTransition` when Jira offers ambiguous transitions.
 
+Managed Jira links, marks and media are tracked even when text is unchanged. Explicit pull records preserved remote content; unchanged automatic runs retain it until local content changes or push is chosen. New interrupted-create journals retain completion intent and can resume it automatically; older journals may need explicit direction.
+
 Add `.hoospecbridge/` to gitignore and persist it between automated runs. Serialize writers across clones. An interrupted create may have succeeded: preserve its pending journal, wait for tracker indexing and rerun. Remove an individual pending entry only after verifying that no issue was created. A stale lock may be removed only after checking its recorded process is no longer syncing.
 
 Report preview, applied writes, conflicts and live readback separately. Exit `0` is success, `1` conflict, `2` operational/config/API error. Pull edits are local; HooSpecBridge does not commit or push them. A feature path/ID rename changes identity and can create new issues; orphaned remote issues are retained.

@@ -3,7 +3,7 @@ export type JsonValue =
 export interface JsonObject {
   [key: string]: JsonValue;
 }
-export interface JiraDescription {
+export interface JiraDescription extends JsonObject {
   type: "doc";
   version: 1;
   content: JsonObject[];
@@ -84,11 +84,12 @@ export interface Baseline {
   remoteDone: boolean;
   localContent: string;
   remoteContent: string;
+  remoteDocument?: string;
 }
 export interface TargetState {
   fingerprint: string;
   tasks: Record<string, Baseline>;
-  pending: Record<string, { marker: string }>;
+  pending: Record<string, { marker: string; desiredDone?: boolean }>;
 }
 export interface State {
   version: 1;

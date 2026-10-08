@@ -5,11 +5,20 @@ import type { Config, Target } from "./types.js";
 import { array, object, string } from "./validation.js";
 
 export const CONFIG_FILE = "hoospecbridge.config.json";
+const configString = (value: unknown, context: string): string => {
+  const result = string(value, context);
+  if (result.trim() !== result || !result.trim())
+    throw new Error(
+      `Invalid ${context}: expected a nonempty string without surrounding whitespace`,
+    );
+  return result;
+};
+
 const optionalString = (
   record: Record<string, unknown>,
   key: string,
 ): string | undefined =>
-  record[key] === undefined ? undefined : string(record[key], key);
+  record[key] === undefined ? undefined : configString(record[key], key);
 
 export function parseConfig(value: unknown): Config {
   const record = object(value, "configuration");
@@ -17,7 +26,7 @@ export function parseConfig(value: unknown): Config {
     throw new Error("Unsupported config version; expected 1");
   const targets = array(record.targets, "targets").map((item): Target => {
     const target = object(item, "target");
-    const name = string(target.name, "target name");
+    const name = configString(target.name, "target name");
     if (
       !/^[a-z][a-z0-9-]{0,63}$/.test(name) ||
       ["constructor", "prototype"].includes(name)
@@ -27,8 +36,8 @@ export function parseConfig(value: unknown): Config {
       );
     const base = {
       name,
-      project: string(target.project, "project"),
-      baseUrl: string(target.baseUrl, "baseUrl"),
+      project: configString(target.project, "project"),
+      baseUrl: configString(target.baseUrl, "baseUrl"),
     };
     const tokenEnv = optionalString(target, "tokenEnv");
     if (tokenEnv !== undefined && !/^[A-Z_][A-Z0-9_]*$/.test(tokenEnv))
@@ -75,11 +84,14 @@ export function parseConfig(value: unknown): Config {
   const specsDir =
     record.specsDir === undefined
       ? "specs"
-      : string(record.specsDir, "specsDir");
+      : configString(record.specsDir, "specsDir");
   if (
     path.isAbsolute(specsDir) ||
+    path.win32.isAbsolute(specsDir) ||
+    /^[a-z]:/i.test(specsDir) ||
     specsDir.split(/[\\/]/).includes("..") ||
-    specsDir === "."
+    path.posix.normalize(specsDir.replace(/\\/g, "/")).replace(/\/$/, "") ===
+      "."
   )
     throw new Error(
       "specsDir must be a relative directory inside the repository",
@@ -100,7 +112,7 @@ export function parseConfig(value: unknown): Config {
   }
   return {
     version: 1,
-    repoId: string(record.repoId, "repoId"),
+    repoId: configString(record.repoId, "repoId"),
     specsDir,
     targets,
     ...(sourceUrl === undefined ? {} : { sourceUrl }),
@@ -108,9 +120,16 @@ export function parseConfig(value: unknown): Config {
 }
 
 export async function loadConfig(root: string): Promise<Config> {
-  return parseConfig(
-    JSON.parse(await readFile(path.join(root, CONFIG_FILE), "utf8")) as unknown,
-  );
+  const file = path.join(root, CONFIG_FILE);
+  const text = await readFile(file, "utf8");
+  try {
+    return parseConfig(JSON.parse(text) as unknown);
+  } catch (error) {
+    throw new Error(
+      `${CONFIG_FILE}: ${error instanceof Error ? error.message : "Invalid configuration"}`,
+      { cause: error },
+    );
+  }
 }
 
 export async function initConfig(

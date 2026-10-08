@@ -19,7 +19,7 @@ spec.md + plan.md links              preview → apply          one issue per ta
 - Previews changes by default. `--apply` saves them.
 - Recovers mappings using stable issue markers; keeps local baselines and an interrupted-create journal.
 - Preserves human notes outside its managed description block and Jira rich content outside its managed paragraphs.
-- Reports conflicts, duplicate markers, orphaned mappings and unavailable Jira transitions.
+- Reports text and rich-content conflicts, duplicate/shared issue markers, orphaned mappings and unavailable Jira transitions.
 - Includes a typed library API and installable agent skills.
 
 ## Install
@@ -81,7 +81,7 @@ hoospecbridge sync --target jira --apply
 
 Jira uses ADF descriptions and the Cloud REST v3 enhanced search endpoint. It creates issue type `Task` by default. Your project must allow the issue type and supplied fields; workflows requiring additional create fields are not supported in this version.
 
-For status updates, HooSpecBridge chooses the single available transition into the `done` category, or into `new` when reopening. If the workflow offers multiple possibilities, configure `doneTransition` / `openTransition` explicitly. Existing status changes are validated during preview. Transitions for a newly created issue can only be checked after creation.
+For status updates, HooSpecBridge chooses the single available transition into the `done` category, or into a non-done category (`new` or `indeterminate`) when reopening. If the workflow offers multiple possibilities, configure `doneTransition` / `openTransition` explicitly. Existing status changes are validated during preview. Transitions for a newly created issue can only be checked after creation.
 
 ## Choose the sync direction
 
@@ -98,6 +98,10 @@ hoospecbridge plan --target gitlab --json
 ```
 
 If any task conflicts, the entire planned batch is left unapplied. Use explicit `push` or `pull` after reviewing the conflict. `pull` imports only completion; it does not rewrite task descriptions or add remote-only tasks.
+
+The human-readable preview shows each proposed title and completion change. `--json` includes the full typed plan and description patches for integrations. Options that do not apply to a command, such as `scan --apply`, are rejected.
+
+Jira link destinations, marks and media inside the managed block are tracked alongside visible text. After an explicit pull, unchanged automatic syncs preserve the recorded remote content. A new repository content change can push it again; explicit push restores repository content immediately. Keep durable human notes outside the managed block.
 
 ## Configuration
 
@@ -142,9 +146,11 @@ Add `.hoospecbridge/` to your Spec Kit repository's `.gitignore`. It contains is
 
 Task identity is `repoId + relative tasks.md path + task ID`. Renaming a feature directory or renumbering an ID creates a new identity. Deleted tasks are reported as orphaned; their remote issues are retained.
 
-Each create is journaled before the request. An interrupted request that does not appear in tracker search blocks another create. Wait for indexing and rerun, or inspect the project and reconcile the pending entry as described in [recovery](docs/recovery.md).
+Each create is journaled before the request, including the requested completion status. An interrupted request that does not appear in tracker search blocks another create. When the marker appears, HooSpecBridge recovers that intent and finishes the existing issue. Wait for indexing and rerun, or inspect the project and reconcile the pending entry as described in [recovery](docs/recovery.md).
 
 Applied runs use a local lock, source fingerprints, remote rechecks and atomic local file replacement. Tracker APIs do not offer an atomic transaction across all issues or a compare-and-swap operation. Writes already completed before an API failure remain recorded. Run a single sync writer per repository across machines and review any interrupted batch before retrying.
+
+State files remain compatible with 0.1.0. Older records acquire structural content fingerprints on their next applied sync. Journals flush file contents before issuing creates; POSIX systems also flush the containing directory. Multi-file checkbox edits preflight every source and recheck each file before replacement.
 
 ## Library API
 
@@ -179,13 +185,16 @@ npx skills add openhoo/hoospecbridge --skill hoospecbridge-usage
 ```bash
 npm ci
 npm run check
+npm run verify:package
 npm run demo
 npm pack
 ```
 
 Source and tests use strict TypeScript, including `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. The runtime has no third-party dependencies. Tests exercise round trips through local HTTP servers for both APIs, source preservation, conflict handling, pagination and interrupted-write recovery. These fixtures do not prove access to your Jira or GitLab project; `doctor` checks read access and an applied sync verifies the writes.
 
-See [architecture](docs/architecture.md), [recovery](docs/recovery.md), [CI integration](docs/ci.md), and [contributing](CONTRIBUTING.md).
+Package verification installs the built archive in a fresh project, checks npm's CLI bin, imports the runtime exports, compiles a strict TypeScript consumer, and compares the bundled agent skills. Build with `npm run build` before running `verify:package` independently.
+
+See [architecture](docs/architecture.md), [recovery](docs/recovery.md), [CI integration](docs/ci.md), [changelog](CHANGELOG.md), and [contributing](CONTRIBUTING.md).
 
 Exit codes: `0` successful preview/apply, `1` conflicts, `2` configuration, API or operational error. JSON output goes to stdout; operational errors go to stderr.
 

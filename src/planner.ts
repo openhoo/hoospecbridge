@@ -1,4 +1,10 @@
-import { contentHash, marker, replaceBlock, taskContent } from "./content.js";
+import {
+  contentHash,
+  managedDocumentHash,
+  marker,
+  replaceBlock,
+  taskContent,
+} from "./content.js";
 import { hash } from "./tasks.js";
 import type {
   Config,
@@ -20,15 +26,17 @@ export function planSync(
   state: TargetState,
   direction: Direction,
 ): Plan {
+  if (!["push", "pull", "both"].includes(direction))
+    throw new Error(`Invalid sync direction: ${String(direction)}`);
   const plan: Plan = {
     target: target.name,
     direction,
     actions: [],
     conflicts: [],
     unchanged: 0,
-    orphaned: Object.keys(state.tasks).filter(
-      (key) => !tasks.some((task) => task.key === key),
-    ),
+    orphaned: [
+      ...new Set([...Object.keys(state.tasks), ...Object.keys(state.pending)]),
+    ].filter((key) => !tasks.some((task) => task.key === key)),
   };
   for (const task of tasks) {
     const issue = issues.get(task.key);
@@ -67,21 +75,47 @@ export function planSync(
     }
     try {
       const remoteContent = contentHash(issue, id);
+      const remoteDocument = managedDocumentHash(issue.description, id);
+      const desiredDescription = replaceBlock(
+        undefined,
+        id,
+        content.lines,
+        target.provider,
+      );
+      const desiredDocument = managedDocumentHash(desiredDescription, id);
+      if (
+        direction === "both" &&
+        baseline?.remoteDocument !== undefined &&
+        remoteDocument !== baseline.remoteDocument &&
+        remoteDocument !== desiredDocument
+      ) {
+        plan.conflicts.push({
+          key: task.key,
+          reason:
+            "Remote managed description formatting or rich content changed. Review it and use --direction push to choose repository content.",
+        });
+        continue;
+      }
       const desiredContent = contentHash(
         {
           title: content.title,
-          description: replaceBlock(
-            undefined,
-            id,
-            content.lines,
-            target.provider,
-          ),
+          description: desiredDescription,
         },
         id,
       );
       const patch: IssuePatch = {};
       let pullDone: boolean | undefined;
-      if (direction !== "pull" && desiredContent !== remoteContent) {
+      if (
+        direction !== "pull" &&
+        (desiredContent !== remoteContent ||
+          (direction === "push" && desiredDocument !== remoteDocument)) &&
+        // A pull deliberately accepts remote content without changing the
+        // repository. Keep that choice until repository content changes.
+        (direction === "push" ||
+          !baseline ||
+          baseline.localContent !== hash(content) ||
+          baseline.remoteContent !== remoteContent)
+      ) {
         if (
           direction === "both" &&
           (!baseline || remoteContent !== baseline.remoteContent)
@@ -104,7 +138,13 @@ export function planSync(
       if (task.done !== issue.done) {
         if (direction === "push") patch.done = task.done;
         else if (direction === "pull") pullDone = issue.done;
-        else if (!baseline) {
+        else if (
+          !baseline &&
+          state.pending[task.key]?.desiredDone === task.done
+        ) {
+          // Complete a journaled create recovered through its marker.
+          patch.done = task.done;
+        } else if (!baseline) {
           plan.conflicts.push({
             key: task.key,
             reason:
@@ -141,6 +181,7 @@ export function planSync(
           state.pending[task.key] ||
           baseline.localContent !== hash(content) ||
           baseline.remoteContent !== remoteContent ||
+          baseline.remoteDocument !== remoteDocument ||
           baseline.localDone !== task.done ||
           baseline.remoteDone !== issue.done
         )

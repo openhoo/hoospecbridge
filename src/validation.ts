@@ -25,7 +25,13 @@ export function json(value: unknown): JsonValue {
   if (Array.isArray(value)) return value.map(json);
   const record = object(value, "JSON");
   const result: JsonObject = {};
-  for (const [key, item] of Object.entries(record)) result[key] = json(item);
+  for (const [key, item] of Object.entries(record))
+    Object.defineProperty(result, key, {
+      value: json(item),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   return result;
 }
 export function jsonObject(value: unknown): JsonObject {

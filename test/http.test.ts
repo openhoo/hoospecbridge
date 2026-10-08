@@ -366,3 +366,169 @@ test("HTTP errors suppress tracker bodies and never retry writes", async () => {
   );
   assert.equal(calls, 1);
 });
+
+function gitlabFixture(fetcher: Fetcher): GitLab {
+  return new GitLab(
+    {
+      name: "gitlab",
+      provider: "gitlab",
+      project: "group/project",
+      baseUrl: "https://gitlab.example",
+    },
+    { GITLAB_TOKEN: "fixture" },
+    fetcher,
+  );
+}
+function jiraFixture(fetcher: Fetcher): Jira {
+  return new Jira(
+    {
+      name: "jira",
+      provider: "jira",
+      project: "APP",
+      baseUrl: "https://team.atlassian.net",
+    },
+    { JIRA_EMAIL: "fixture@example.com", JIRA_API_TOKEN: "fixture" },
+    fetcher,
+  );
+}
+const gitlabRecord = (iid = 1) => ({
+  iid,
+  title: "Issue",
+  state: "opened",
+  description: "",
+  web_url: "https://gitlab.example/issues/1",
+});
+
+test("GitLab follows explicit next pages even for short pages", async () => {
+  const pages: string[] = [];
+  const tracker = gitlabFixture(async (input) => {
+    const page = new URL(String(input)).searchParams.get("page") ?? "";
+    pages.push(page);
+    return Response.json([gitlabRecord(Number(page))], {
+      headers: { "x-next-page": page === "1" ? "3" : "" },
+    });
+  });
+  assert.equal((await tracker.list()).length, 2);
+  assert.deepEqual(pages, ["1", "3"]);
+});
+
+test("GitLab refuses malformed, repeated pagination and duplicate issue identities", async () => {
+  for (const next of ["1", "0", "-1", "wat", "2.5", "9007199254740992"])
+    await assert.rejects(
+      gitlabFixture(async () =>
+        Response.json([gitlabRecord()], { headers: { "x-next-page": next } }),
+      ).list(),
+      /Invalid GitLab next page/,
+    );
+  let calls = 0;
+  await assert.rejects(
+    gitlabFixture(async () =>
+      Response.json([gitlabRecord()], {
+        headers: { "x-next-page": ++calls === 1 ? "2" : "" },
+      }),
+    ).list(),
+    /duplicate issue/,
+  );
+});
+
+test("GitLab refuses unsafe or nonpositive issue identifiers", async () => {
+  for (const iid of [0, -1, 1.5, 9007199254740992])
+    await assert.rejects(
+      gitlabFixture(async () => Response.json(gitlabRecord(iid))).get("1"),
+      /Invalid GitLab issue response/,
+    );
+});
+
+test("Jira refuses incomplete, malformed and repeated pagination", async () => {
+  for (const pagination of [
+    { isLast: false },
+    { isLast: "false" },
+    { isLast: false, nextPageToken: "" },
+  ])
+    await assert.rejects(
+      jiraFixture(async () =>
+        Response.json({ issues: [], ...pagination }),
+      ).list(),
+      /pagination|page token/,
+    );
+  await assert.rejects(
+    jiraFixture(async () =>
+      Response.json({ issues: [], isLast: false, nextPageToken: "same" }),
+    ).list(),
+    /token repeated/,
+  );
+});
+
+test("Jira supports reopening directly into In Progress", async () => {
+  const methods: string[] = [];
+  const tracker = jiraFixture(async (input, init) => {
+    const method = init?.method ?? "GET";
+    methods.push(method);
+    if (String(input).endsWith("/transitions")) {
+      if (method === "GET")
+        return Response.json({
+          transitions: [
+            { id: "21", to: { statusCategory: { key: "indeterminate" } } },
+          ],
+        });
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        transition: { id: "21" },
+      });
+      return new Response(null, { status: 204 });
+    }
+    return Response.json({
+      key: "APP-1",
+      fields: {
+        summary: "Issue",
+        description: {
+          type: "doc",
+          version: 1,
+          attrs: { custom: "preserved" },
+          content: [],
+        },
+        status: { statusCategory: { key: "indeterminate" } },
+      },
+    });
+  });
+  const issue = await tracker.update("APP-1", { done: false });
+  assert.equal(issue.done, false);
+  assert.deepEqual(
+    typeof issue.description === "object" ? issue.description.attrs : undefined,
+    { custom: "preserved" },
+  );
+  assert.deepEqual(methods, ["GET", "POST", "GET"]);
+});
+
+test("GitLab supports Link-only pagination with the server's actual page size", async () => {
+  const pages: string[] = [];
+  const tracker = gitlabFixture(async (input) => {
+    const url = new URL(String(input));
+    const page = url.searchParams.get("page") ?? "";
+    pages.push(page);
+    if (page === "1")
+      return Response.json([gitlabRecord()], {
+        headers: {
+          link: '<https://gitlab.example/api/v4/projects/group%2Fproject/issues?page=2&per_page=1>; rel="next"',
+        },
+      });
+    assert.equal(url.searchParams.get("per_page"), "1");
+    return Response.json([gitlabRecord(2)], { headers: { "x-next-page": "" } });
+  });
+  assert.equal((await tracker.list()).length, 2);
+  assert.deepEqual(pages, ["1", "2"]);
+});
+
+test("GitLab refuses pagination links targeting a different project or origin", async () => {
+  for (const url of [
+    "https://attacker.example/issues?page=2",
+    "https://gitlab.example/api/v4/projects/other/issues?page=2",
+  ])
+    await assert.rejects(
+      gitlabFixture(async () =>
+        Response.json([gitlabRecord()], {
+          headers: { link: `<${url}>; rel="next"` },
+        }),
+      ).list(),
+      /Invalid GitLab pagination link/,
+    );
+});

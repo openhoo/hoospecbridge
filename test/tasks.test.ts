@@ -75,3 +75,93 @@ test("scan rejects symlinked source files", async (t) => {
   await symlink(path.join(root, "outside.md"), path.join(root, tasksFile));
   await assert.rejects(scan(root), /Symlink/);
 });
+
+test("fence content cannot close a block with a trailing info string", () => {
+  const text =
+    "````markdown\n```still code\n- [ ] T001 Example\n````\n- [ ] T001 Actual\n";
+  assert.equal(parseTasks(text, tasksFile)[0]?.description, "Actual");
+});
+
+test("parses task tags in either order and rejects descriptions made only of tags", () => {
+  const task = parseTasks("- [ ] T001 [US2] [P] Add checkout", tasksFile)[0];
+  assert.equal(task?.story, "US2");
+  assert.equal(task?.parallel, true);
+  assert.equal(task?.description, "Add checkout");
+  for (const tags of ["[P]", "[US1]", "[P] [US1]"])
+    assert.throws(
+      () => parseTasks(`- [ ] T001 ${tags}`, tasksFile),
+      /empty task description/,
+    );
+  assert.throws(
+    () => parseTasks("- [ ] T001 [US1] [US2] Bad", tasksFile),
+    /duplicate story/,
+  );
+});
+
+test("checkbox batch validates all files before replacing any source", async (t) => {
+  const { root, clean } = await fixture();
+  t.after(clean);
+  const { mkdir } = await import("node:fs/promises");
+  const second = path.join(root, "specs", "002-other", "tasks.md");
+  await mkdir(path.dirname(second));
+  await writeFile(second, "- [ ] T001 Another task\n");
+  const tasks = await scan(root);
+  const original = await readFile(path.join(root, tasksFile), "utf8");
+  await writeFile(second, "- [ ] T001 Edited task\n");
+  await assert.rejects(
+    setCheckboxes(
+      root,
+      tasks,
+      tasks.map((task) => ({ key: task.key, done: true })),
+    ),
+    /changed during sync/,
+  );
+  assert.equal(await readFile(path.join(root, tasksFile), "utf8"), original);
+});
+
+test("checkbox batch rejects conflicting changes for the same task before writes", async (t) => {
+  const { root, clean } = await fixture();
+  t.after(clean);
+  const tasks = await scan(root);
+  const original = await readFile(path.join(root, tasksFile), "utf8");
+  const key = tasks[0]!.key;
+  await assert.rejects(
+    setCheckboxes(root, tasks, [
+      { key, done: true },
+      { key, done: false },
+    ]),
+    /Conflicting checkbox/,
+  );
+  assert.equal(await readFile(path.join(root, tasksFile), "utf8"), original);
+});
+
+test("ignores indented Markdown code while supporting zero to three leading spaces", () => {
+  const text = [
+    "    - [ ] T001 Example",
+    "\t- [ ] T001 Tab example",
+    "    - [ ] T002",
+    "\t- [ ] T002",
+    "- [ ] T001 Root task",
+    " - [ ] T002 One space",
+    "  * [x] T003 Two spaces",
+    "   + [X] T004 Three spaces",
+  ].join("\n");
+  const tasks = parseTasks(text, tasksFile);
+  assert.deepEqual(
+    tasks.map((task) => [task.id, task.description]),
+    [
+      ["T001", "Root task"],
+      ["T002", "One space"],
+      ["T003", "Two spaces"],
+      ["T004", "Three spaces"],
+    ],
+  );
+  assert.deepEqual(
+    tasks.map((task) => task.line),
+    [5, 6, 7, 8],
+  );
+  assert.throws(
+    () => parseTasks("   - [ ] T005", tasksFile),
+    /empty task description/,
+  );
+});

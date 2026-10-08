@@ -27,6 +27,9 @@ export class HttpClient {
     route: string,
     body?: unknown,
   ): Promise<{ data: unknown; headers: Headers }> {
+    const readOnly =
+      method === "GET" ||
+      (method === "POST" && route === "/rest/api/3/search/jql");
     let response: Response;
     try {
       response = await this.fetcher(this.base + route, {
@@ -42,19 +45,36 @@ export class HttpClient {
       });
     } catch {
       throw new Error(
-        `${method} request failed or timed out. A write may have succeeded; inspect the issue before retrying.`,
+        `${method} request failed or timed out. ${readOnly ? "Check network and tracker availability." : "A write may have succeeded; inspect the issue before retrying."}`,
       );
     }
     if (!response.ok)
       throw new Error(
-        `${method} request returned HTTP ${response.status}${response.status === 429 ? "; rate limited, retry later" : ""}. Check permissions and configuration. Server body suppressed to protect credentials.`,
+        `${method} request returned HTTP ${response.status}. ${statusHint(response.status)}`,
       );
     if (response.status === 204)
       return { data: null, headers: response.headers };
     try {
       return { data: await response.json(), headers: response.headers };
     } catch {
-      throw new Error("Invalid JSON response from issue tracker");
+      throw new Error(
+        `Invalid JSON response from issue tracker.${readOnly ? "" : " A write may have succeeded; inspect the issue before retrying."}`,
+      );
     }
   }
+}
+
+function statusHint(status: number): string {
+  if (status === 401)
+    return "Check the configured credential environment variables and authentication.";
+  if (status === 403)
+    return "The credential lacks access. Check project and issue permissions.";
+  if (status === 404)
+    return "Check the tracker URL, project, issue ID and access permissions.";
+  if (status === 400 || status === 422)
+    return "The tracker rejected the request. Check issue type, required fields and workflow configuration.";
+  if (status === 429) return "Rate limited; retry later.";
+  if (status >= 500)
+    return "The tracker is unavailable. Inspect any attempted write before retrying.";
+  return "Check tracker permissions and configuration.";
 }

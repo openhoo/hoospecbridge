@@ -14,9 +14,10 @@ Protect these contracts:
 - Task identity uses repoId + feature-relative tasks.md path + task ID. Duplicate IDs within a feature and duplicate remote markers are errors.
 - Preview must write neither tracker nor local state. Any plan conflict blocks the whole batch.
 - Content flows from tasks to issues. Pull changes completion only. Remote notes outside managed blocks and Jira rich nodes are preserved.
+- Track rich managed structure separately from text. Link/media edits must conflict before replacement, while JSON key ordering and external notes must not create structural conflicts. Pull-preserved content stays until new local edits or explicit push.
 - Create requests have a durable pending entry first. A lost response must not trigger another blind create. Save mappings before a follow-up transition.
 - Remote updates and multiple task files cannot share a transaction. Checkpoint completed mutations and verify readback; never claim rollback of API writes.
 
 Exercise changed behavior with task/source fixtures, planner tests or the local HTTP integration fixtures. Add meaningful failure/recovery cases for mutations. Do not use live tracker credentials in automated tests. API fixture success and live project acceptance are distinct.
 
-For packaging changes, run `npm pack` and install the tarball in a fresh directory; verify the CLI bin and typed library exports. Keep user skill commands and README examples aligned. Use the user's documentation workflow when API contracts or dependencies change.
+For packaging changes, build and run `npm run verify:package`; it installs the tarball in a fresh directory and checks the CLI bin, strict consumer declarations, runtime exports and bundled skills. Keep user skill commands and README examples aligned. Use the user's documentation workflow when API contracts or dependencies change.

@@ -5,6 +5,7 @@ import {
   realpath,
   writeFile,
   rename,
+  rm,
 } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -22,22 +23,23 @@ export function parseTasks(text: string, file: string): ParsedTask[] {
   let fenceChar = "";
   let fenceLength = 0;
   for (const [index, line] of text.split(/\r?\n/).entries()) {
-    const fence = line.match(/^\s*(`{3,}|~{3,})/);
-    if (fence) {
-      const delimiter = fence[1]!;
-      if (!fenced) {
-        fenced = true;
-        fenceChar = delimiter[0]!;
-        fenceLength = delimiter.length;
-      } else if (delimiter[0] === fenceChar && delimiter.length >= fenceLength)
+    if (fenced) {
+      const closing = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/)?.[1];
+      if (closing?.[0] === fenceChar && closing.length >= fenceLength)
         fenced = false;
       continue;
     }
-    if (fenced) continue;
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence && !(fence[1]![0] === "`" && fence[2]!.includes("`"))) {
+      fenced = true;
+      fenceChar = fence[1]![0]!;
+      fenceLength = fence[1]!.length;
+      continue;
+    }
     if (/^#{1,6}\s/.test(line)) phase = line.replace(/^#+\s*/, "").trim();
-    const match = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(T\d+)\s+(.+?)\s*$/);
+    const match = line.match(/^ {0,3}[-*+]\s+\[([ xX])\]\s+(T\d+)\s+(.+?)\s*$/);
     if (!match) {
-      if (/^\s*[-*+]\s+\[[ xX]\]\s+T\d+\b/.test(line))
+      if (/^ {0,3}[-*+]\s+\[[ xX]\]\s+T\d+\b/.test(line))
         throw new Error(`${file}:${index + 1}: empty task description`);
       continue;
     }
@@ -48,10 +50,23 @@ export function parseTasks(text: string, file: string): ParsedTask[] {
       throw new Error(`${file}:${index + 1}: duplicate task ${id}`);
     ids.add(id);
     let description = body;
-    const parallel = /^\[P\]\s+/.test(description);
-    description = description.replace(/^\[P\]\s+/, "");
-    const story = description.match(/^\[(US\d+)\]\s+/)?.[1] ?? "";
-    description = description.replace(/^\[US\d+\]\s+/, "");
+    let parallel = false;
+    let story = "";
+    for (;;) {
+      const tag = description.match(/^\[(P|US\d+)\](?:\s+|$)/);
+      if (!tag) break;
+      if (tag[1] === "P") {
+        if (parallel)
+          throw new Error(`${file}:${index + 1}: duplicate [P] tag`);
+        parallel = true;
+      } else {
+        if (story) throw new Error(`${file}:${index + 1}: duplicate story tag`);
+        story = tag[1]!;
+      }
+      description = description.slice(tag[0].length);
+    }
+    if (!description)
+      throw new Error(`${file}:${index + 1}: empty task description`);
     tasks.push({
       key: `${file}#${id}`,
       id,
@@ -126,14 +141,30 @@ export async function setCheckboxes(
   tasks: Task[],
   changes: { key: string; done: boolean }[],
 ): Promise<void> {
+  const taskByKey = new Map(tasks.map((task) => [task.key, task]));
   const groups = new Map<string, { key: string; done: boolean }[]>();
+  const seen = new Map<string, boolean>();
   for (const change of changes) {
-    const file = tasks.find((task) => task.key === change.key)?.file;
-    if (!file) throw new Error(`Unknown task ${change.key}`);
-    const group = groups.get(file) ?? [];
+    const task = taskByKey.get(change.key);
+    if (!task) throw new Error(`Unknown task ${change.key}`);
+    if (seen.has(change.key)) {
+      if (seen.get(change.key) !== change.done)
+        throw new Error(`Conflicting checkbox changes for ${change.key}`);
+      continue;
+    }
+    seen.set(change.key, change.done);
+    const group = groups.get(task.file) ?? [];
     group.push(change);
-    groups.set(file, group);
+    groups.set(task.file, group);
   }
+  const prepared: {
+    absolute: string;
+    text: string;
+    updated: string;
+    mode: number;
+  }[] = [];
+  // Validate every source before replacing any file. Filesystem writes still
+  // cannot form a transaction; recheck each source immediately before its write.
   for (const [file, updates] of groups) {
     const absolute = await safeFile(root, file);
     const text = await readFile(absolute, "utf8");
@@ -141,16 +172,35 @@ export async function setCheckboxes(
       throw new Error(`${file} changed during sync; rerun`);
     const lines = text.split("\n");
     for (const change of updates) {
-      const task = tasks.find((item) => item.key === change.key)!;
-      lines[task.line - 1] = lines[task.line - 1]!.replace(
+      const task = taskByKey.get(change.key)!;
+      const line = lines[task.line - 1];
+      if (
+        line === undefined ||
+        !parseTasks(line, file).some((parsed) => parsed.id === task.id)
+      )
+        throw new Error(`${file}: task location changed for ${task.id}; rerun`);
+      lines[task.line - 1] = line.replace(
         /^(\s*[-*+]\s+\[)[ xX](\])/,
         `$1${change.done ? "x" : " "}$2`,
       );
     }
-    const temp = `${absolute}.${randomUUID()}.tmp`;
-    await writeFile(temp, lines.join("\n"), {
+    prepared.push({
+      absolute,
+      text,
+      updated: lines.join("\n"),
       mode: (await lstat(absolute)).mode,
     });
-    await rename(temp, absolute);
+  }
+  for (const { absolute, text, updated, mode } of prepared) {
+    if (updated === text) continue;
+    if ((await readFile(absolute, "utf8")) !== text)
+      throw new Error(`${absolute} changed during sync; rerun`);
+    const temp = `${absolute}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temp, updated, { mode, flag: "wx" });
+      await rename(temp, absolute);
+    } finally {
+      await rm(temp, { force: true });
+    }
   }
 }

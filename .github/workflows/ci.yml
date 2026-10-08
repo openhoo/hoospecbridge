@@ -19,12 +19,4 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run check
-      - run: npm pack --ignore-scripts
-      - name: Verify packaged CLI and library
-        run: |
-          mkdir /tmp/hoospecbridge-package
-          cd /tmp/hoospecbridge-package
-          npm init -y
-          npm install "$GITHUB_WORKSPACE/hoospecbridge-0.1.0.tgz"
-          npx --no-install hoospecbridge --help
-          node --input-type=module -e "import {parseTasks} from 'hoospecbridge'; if(parseTasks('- [ ] T001 Verify package', 'specs/test/tasks.md').length !== 1) process.exit(1)"
+      - run: npm run verify:package
