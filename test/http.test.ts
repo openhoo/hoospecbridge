@@ -180,8 +180,15 @@ async function startApi(provider: "jira" | "gitlab"): Promise<ApiFixture> {
   };
   const server = createServer((request, response) => {
     void handler(request, response).catch((error: unknown) => {
-      response.writeHead(500);
-      response.end(error instanceof Error ? error.message : "fixture error");
+      response.writeHead(500, {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      });
+      response.end(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : "fixture error",
+        }),
+      );
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -257,6 +264,25 @@ for (const provider of ["gitlab", "jira"] as const) {
     assert.equal(api.issues.size, 1);
   });
 }
+
+test("fixture errors return JSON with a non-sniffable content type", async (t) => {
+  const api = await startApi("gitlab");
+  t.after(api.close);
+  const response = await fetch(
+    `${api.url}/api/v4/projects/team%2Fcheckout/issues`,
+    {
+      headers: { "PRIVATE-TOKEN": "<script>untrusted</script>" },
+    },
+  );
+  assert.equal(response.status, 500);
+  assert.equal(
+    response.headers.get("content-type"),
+    "application/json; charset=utf-8",
+  );
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  const body = object((await response.json()) as unknown, "fixture error");
+  assert.equal(typeof body.error, "string");
+});
 
 test("GitLab paginates beyond 100 issues and accepts empty unrelated descriptions", async () => {
   let pages = 0;
