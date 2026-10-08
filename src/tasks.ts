@@ -16,7 +16,7 @@ export const hash = (value: unknown): string =>
 
 export function parseTasks(text: string, file: string): ParsedTask[] {
   const tasks: ParsedTask[] = [];
-  const ids = new Set();
+  const ids = new Set<string>();
   let phase = "";
   let fenced = false;
   let fenceChar = "";
