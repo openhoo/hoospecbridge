@@ -25,16 +25,33 @@ export function indexIssues(
   tasks: Task[],
 ): Map<string, Issue> {
   const result = new Map<string, Issue>();
-  for (const task of tasks) {
-    const id = marker(repoId, task.key);
-    const matches = issues.filter((issue) =>
-      descriptionText(issue.description).includes(`[${id}:begin]`),
-    );
-    if (matches.length > 1)
+  const taskMarkers = new Map(
+    tasks.map((task) => [marker(repoId, task.key), task.key]),
+  );
+  const issueIds = new Set<string>();
+  for (const issue of issues) {
+    if (issueIds.has(issue.id))
+      throw new Error(`Duplicate remote issue ID: ${issue.id}`);
+    issueIds.add(issue.id);
+    const keys = new Set<string>();
+    for (const match of descriptionText(issue.description).matchAll(
+      /\[(hoospecbridge:[a-f0-9]{32}):begin\]/g,
+    )) {
+      const key = taskMarkers.get(match[1]!);
+      if (key !== undefined) keys.add(key);
+    }
+    if (keys.size > 1)
       throw new Error(
-        `Duplicate remote issues for ${task.key}: ${matches.map((issue) => issue.id).join(", ")}`,
+        `Remote issue ${issue.id} contains markers for multiple tasks: ${[...keys].join(", ")}`,
       );
-    if (matches[0]) result.set(task.key, matches[0]);
+    for (const key of keys) {
+      const previous = result.get(key);
+      if (previous)
+        throw new Error(
+          `Duplicate remote issues for ${key}: ${previous.id}, ${issue.id}`,
+        );
+      result.set(key, issue);
+    }
   }
   return result;
 }

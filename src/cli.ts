@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { createTracker } from "./adapters/index.js";
 import { initConfig, loadConfig } from "./config.js";
 import { scan } from "./tasks.js";
 import { sync } from "./sync.js";
-import type { Direction, Plan } from "./types.js";
-import { isMissing } from "./validation.js";
+import type { Direction } from "./types.js";
+import { object, string, isMissing } from "./validation.js";
+import { renderPlan } from "./presentation.js";
 
 const HELP = `HooSpecBridge — Spec Kit ↔ Jira / GitLab
 
@@ -25,46 +26,34 @@ both: repository content → tracker; completion follows the side changed since 
 
 Credentials: GITLAB_TOKEN, or JIRA_EMAIL and JIRA_API_TOKEN.
 Configuration: hoospecbridge.config.json. State: .hoospecbridge/state.json.
+Common options: --root PATH, --json, --help, --version.
 Exit codes: 0 success/preview, 1 conflicts, 2 configuration/API/operational error.
 `;
-
-function printPlan(plan: Plan, applied: boolean): void {
-  process.stdout.write(
-    `${applied ? "Applied" : "Preview"} · ${plan.target} · ${plan.direction}\n`,
-  );
-  for (const action of plan.actions)
-    process.stdout.write(
-      `  ${action.type.padEnd(7)} ${action.key}${action.type !== "create" ? ` → ${action.issue.id}` : ""}\n`,
-    );
-  for (const conflict of plan.conflicts)
-    process.stdout.write(`  conflict ${conflict.key}: ${conflict.reason}\n`);
-  for (const key of plan.orphaned)
-    process.stdout.write(`  orphan   ${key} (remote issue retained)\n`);
-  process.stdout.write(
-    `${plan.actions.length} actions · ${plan.unchanged} unchanged · ${plan.conflicts.length} conflicts\n`,
-  );
-  if (!applied && !plan.conflicts.length && plan.actions.length)
-    process.stdout.write("Run sync with --apply to save these changes.\n");
-}
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
-      root: { type: "string", default: "." },
+      root: { type: "string" },
       provider: { type: "string" },
       project: { type: "string" },
       "base-url": { type: "string" },
       target: { type: "string" },
-      direction: { type: "string", default: "both" },
-      apply: { type: "boolean", default: false },
-      json: { type: "boolean", default: false },
+      direction: { type: "string" },
+      apply: { type: "boolean" },
+      json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
     },
   });
   if (values.version) {
-    process.stdout.write("0.1.0\n");
+    const metadata = object(
+      JSON.parse(
+        await readFile(new URL("../package.json", import.meta.url), "utf8"),
+      ) as unknown,
+      "package metadata",
+    );
+    process.stdout.write(string(metadata.version, "package version") + "\n");
     return;
   }
   const command = positionals[0];
@@ -74,7 +63,22 @@ async function main(): Promise<void> {
   }
   if (positionals.length !== 1)
     throw new Error("Expected one command; use --help");
-  const root = await realpath(values.root);
+  const commandOptions: Record<string, readonly string[]> = {
+    init: ["provider", "project", "base-url"],
+    scan: [],
+    doctor: ["target"],
+    plan: ["target", "direction"],
+    sync: ["target", "direction", "apply"],
+  };
+  const allowed = Object.hasOwn(commandOptions, command)
+    ? commandOptions[command]
+    : undefined;
+  if (!allowed) throw new Error(`Unknown command ${command}; use --help`);
+  for (const option of Object.keys(values)) {
+    if (!["root", "json", "help", "version", ...allowed].includes(option))
+      throw new Error(`--${option} is not supported by ${command}; use --help`);
+  }
+  const root = await realpath(values.root ?? ".");
   if (command === "init") {
     if (values.provider !== "gitlab" && values.provider !== "jira")
       throw new Error("init requires --provider gitlab or jira");
@@ -143,18 +147,17 @@ async function main(): Promise<void> {
     );
     return;
   }
-  if (command === "plan" && values.apply)
-    throw new Error("plan is read-only; use sync --apply");
-  if (!["push", "pull", "both"].includes(values.direction))
+  const direction = values.direction ?? "both";
+  if (!["push", "pull", "both"].includes(direction))
     throw new Error("--direction must be push, pull or both");
   const result = await sync({
     root,
     target: values.target,
-    direction: values.direction as Direction,
-    apply: command === "sync" && values.apply,
+    direction: direction as Direction,
+    apply: command === "sync" && values.apply === true,
   });
   if (values.json) process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-  else printPlan(result.plan, result.applied);
+  else process.stdout.write(renderPlan(result.plan, result.applied));
   if (result.plan.conflicts.length) process.exitCode = 1;
 }
 

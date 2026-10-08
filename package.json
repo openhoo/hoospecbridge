@@ -1,6 +1,6 @@
 {
   "name": "hoospecbridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Bridge Spec Kit tasks with Jira and GitLab issues",
   "type": "module",
   "bin": {
@@ -16,6 +16,7 @@
     "dist",
     "skills",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "docs"
   ],
@@ -29,6 +30,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run typecheck && npm test && npm run build && npm run format:check",
+    "verify:package": "tsx scripts/verify-package.ts",
     "demo": "tsx src/cli.ts scan --root examples",
     "prepare": "npm run build"
   },

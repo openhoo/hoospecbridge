@@ -6,4 +6,4 @@ Keep planning pure and adapters behind the `Tracker` interface. Parse API JSON a
 
 Changes to writes need behavioral tests: duplicate prevention, partial-failure recovery, conflict handling and returned tracker state. The HTTP fixtures cover request contracts for both providers; do not use real project credentials in automated tests.
 
-`npm pack` builds a standalone CLI/library package. Check installation from the tarball when changing exports, bin paths or lifecycle scripts. Keep user skills self-contained and update command documentation alongside the CLI.
+`npm pack` builds a standalone CLI/library package. Run `npm run verify:package` after a build: it installs the archive in a fresh project, exercises npm's bin mapping, imports the library, compiles a strict TypeScript consumer and verifies bundled skill bytes. Keep user skills self-contained and update command documentation alongside the CLI.

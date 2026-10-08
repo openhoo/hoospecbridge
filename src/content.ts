@@ -30,9 +30,10 @@ export function taskContent(task: Task, config: Config): Content {
   lines.push(`Source: ${task.file}:${task.line}`);
   if (config.sourceUrl) {
     const base = config.sourceUrl.replace(/\/$/, "");
-    const featurePath = task.file.substring(0, task.file.lastIndexOf("/"));
+    const encodedFile = task.file.split("/").map(encodeURIComponent).join("/");
+    const featurePath = encodedFile.substring(0, encodedFile.lastIndexOf("/"));
     lines.push(
-      `Tasks: ${base}/${task.file}`,
+      `Tasks: ${base}/${encodedFile}`,
       `Specification: ${base}/${featurePath}/spec.md`,
       `Plan: ${base}/${featurePath}/plan.md`,
     );
@@ -49,6 +50,7 @@ export const paragraph = (text: string): JsonObject => ({
 });
 export function nodeText(node: JsonValue): string {
   if (!node || typeof node !== "object" || Array.isArray(node)) return "";
+  if (node.type === "hardBreak") return "\n";
   if (typeof node.text === "string") return node.text;
   return Array.isArray(node.content) ? node.content.map(nodeText).join("") : "";
 }
@@ -72,12 +74,37 @@ export function managedText(description: Description, id: string): string {
   return text.slice(a + begin(id).length, b).trim();
 }
 
+function markerParagraph(node: JsonObject, text: string): boolean {
+  return (
+    node.type === "paragraph" &&
+    Array.isArray(node.content) &&
+    node.content.every(
+      (child) =>
+        child !== null &&
+        typeof child === "object" &&
+        !Array.isArray(child) &&
+        child.type === "text" &&
+        typeof child.text === "string",
+    ) &&
+    nodeText(node) === text
+  );
+}
+
 export function replaceBlock(
   description: Description | undefined,
   id: string,
   lines: string[],
   provider: Target["provider"],
 ): Description {
+  if (
+    lines.some(
+      (line) =>
+        line.includes(begin(id)) ||
+        line.includes(end(id)) ||
+        /\[hoospecbridge:[a-f0-9]{32}:(?:begin|end)\]/.test(line),
+    )
+  )
+    throw new Error("Task content must not include managed block markers");
   if (provider === "gitlab") {
     if (description !== undefined && typeof description !== "string")
       throw new Error("GitLab requires a Markdown description");
@@ -98,14 +125,15 @@ export function replaceBlock(
   let after: JsonObject[] = [];
   if (nodes.length) {
     managedText(description!, id);
-    const a = nodes.findIndex((node) => nodeText(node) === begin(id));
-    const b = nodes.findIndex((node) => nodeText(node) === end(id));
+    const a = nodes.findIndex((node) => markerParagraph(node, begin(id)));
+    const b = nodes.findIndex((node) => markerParagraph(node, end(id)));
     if (a < 0 || b <= a)
       throw new Error("Jira managed markers must remain separate paragraphs");
     before = nodes.slice(0, a);
     after = nodes.slice(b + 1);
   }
   const result: JiraDescription = {
+    ...description,
     type: "doc",
     version: 1,
     content: [
@@ -115,6 +143,36 @@ export function replaceBlock(
     ],
   };
   return result;
+}
+
+/** Detect rich edits inside a managed block while ignoring external human notes. */
+export function managedDocumentHash(
+  description: Description,
+  id: string,
+): string {
+  const text = managedText(description, id);
+  if (typeof description === "string") return hash(text);
+  const a = description.content.findIndex((node) =>
+    markerParagraph(node, begin(id)),
+  );
+  const b = description.content.findIndex((node) =>
+    markerParagraph(node, end(id)),
+  );
+  if (a < 0 || b <= a)
+    throw new Error("Jira managed markers must remain separate paragraphs");
+  // JSON object property order is not meaningful, but node/mark array order is.
+  return hash(canonicalJson(description.content.slice(a, b + 1)));
+}
+
+function canonicalJson(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalJson(value[key]!)]),
+    );
+  return value;
 }
 
 export const contentHash = (

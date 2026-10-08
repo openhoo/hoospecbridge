@@ -38,12 +38,16 @@ export class Jira implements Tracker {
     const status = object(fields.status, "Jira status");
     const category = object(status.statusCategory, "Jira status category");
     const key = string(data.key, "Jira issue key");
+    const categoryKey = string(category.key, "Jira status category");
+    if (!["new", "indeterminate", "done"].includes(categoryKey))
+      throw new Error("Invalid Jira status category");
     let description: JiraDescription = { type: "doc", version: 1, content: [] };
     if (fields.description !== null && fields.description !== undefined) {
       const doc = object(fields.description, "Jira description");
       if (doc.type !== "doc" || doc.version !== 1)
         throw new Error("Jira description must be ADF v1");
       description = {
+        ...jsonObject(doc),
         type: "doc",
         version: 1,
         content: array(doc.content, "ADF content").map(jsonObject),
@@ -53,13 +57,14 @@ export class Jira implements Tracker {
       id: key,
       title: string(fields.summary, "Jira summary"),
       description,
-      done: string(category.key, "Jira status category") === "done",
+      done: categoryKey === "done",
       url: `${this.http.base}/browse/${encodeURIComponent(key)}`,
     };
   }
   async list(): Promise<Issue[]> {
     const issues: Issue[] = [];
     const seen = new Set<string>();
+    const issueIds = new Set<string>();
     let nextPageToken: string | undefined;
     for (let page = 0; page < 10000; page++) {
       const response = await this.http.request(
@@ -73,12 +78,23 @@ export class Jira implements Tracker {
         },
       );
       const data = object(response.data, "Jira search response");
-      issues.push(
-        ...array(data.issues, "Jira issues").map((issue) =>
-          this.normalize(issue),
-        ),
-      );
-      if (data.isLast === true || !data.nextPageToken) return issues;
+      for (const value of array(data.issues, "Jira issues")) {
+        const issue = this.normalize(value);
+        if (issueIds.has(issue.id))
+          throw new Error("Jira pagination returned a duplicate issue");
+        issueIds.add(issue.id);
+        issues.push(issue);
+      }
+      if (data.isLast !== undefined && typeof data.isLast !== "boolean")
+        throw new Error("Invalid Jira pagination isLast");
+      if (data.isLast === true) return issues;
+      if (data.nextPageToken === undefined || data.nextPageToken === null) {
+        if (data.isLast === false)
+          throw new Error(
+            "Jira pagination is incomplete: missing next page token",
+          );
+        return issues;
+      }
       nextPageToken = string(data.nextPageToken, "Jira page token");
       if (seen.has(nextPageToken))
         throw new Error("Jira pagination token repeated");
@@ -121,9 +137,15 @@ export class Jira implements Tracker {
         const transition = object(value, "Jira transition");
         const to = object(transition.to, "Jira transition destination");
         const category = object(to.statusCategory, "Jira transition category");
+        const categoryKey = string(
+          category.key,
+          "Jira transition category key",
+        );
+        if (!["new", "indeterminate", "done"].includes(categoryKey))
+          throw new Error("Invalid Jira transition status category");
         return {
           id: string(transition.id, "Jira transition ID"),
-          category: string(category.key, "Jira transition category key"),
+          category: categoryKey,
         };
       },
     );
@@ -141,7 +163,7 @@ export class Jira implements Tracker {
       return choice.id;
     }
     const candidates = transitions.filter(
-      (transition) => transition.category === (done ? "done" : "new"),
+      (transition) => (transition.category === "done") === done,
     );
     if (candidates.length !== 1)
       throw new Error(

@@ -33,7 +33,8 @@ export class GitLab implements Tracker {
   private normalize(value: unknown): Issue {
     const data = object(value, "GitLab issue");
     if (
-      !Number.isInteger(data.iid) ||
+      !Number.isSafeInteger(data.iid) ||
+      (data.iid as number) <= 0 ||
       (data.state !== "opened" && data.state !== "closed")
     )
       throw new Error("Invalid GitLab issue response");
@@ -53,15 +54,70 @@ export class GitLab implements Tracker {
   }
   async list(): Promise<Issue[]> {
     const issues: Issue[] = [];
-    for (let page = 1; page <= 10000; page++) {
+    let page = 1;
+    let perPage = 100;
+    const seen = new Set<string>();
+    for (let request = 0; request < 10000; request++) {
       const { data, headers } = await this.http.request(
         "GET",
-        `${this.prefix}?scope=all&state=all&per_page=100&page=${page}`,
+        `${this.prefix}?scope=all&state=all&order_by=created_at&sort=asc&per_page=${perPage}&page=${page}`,
       );
       const items = array(data, "GitLab issue list");
-      issues.push(...items.map((item) => this.normalize(item)));
-      const next = headers.get("x-next-page");
-      if (next === "" || items.length < 100) return issues;
+      for (const item of items) {
+        const issue = this.normalize(item);
+        if (seen.has(issue.id))
+          throw new Error("GitLab pagination returned a duplicate issue");
+        seen.add(issue.id);
+        issues.push(issue);
+      }
+      let next = headers.get("x-next-page");
+      const links = [
+        ...(headers.get("link") ?? "").matchAll(
+          /<([^>]+)>\s*;\s*rel="?next"?(?=\s*(?:,|;|$))/g,
+        ),
+      ];
+      if (links.length > 1) throw new Error("Invalid GitLab pagination links");
+      if (links[0]) {
+        let link: URL;
+        try {
+          link = new URL(links[0][1]!);
+        } catch {
+          throw new Error("Invalid GitLab pagination link");
+        }
+        const expected = new URL(this.http.base + this.prefix);
+        const linkedPage = link.searchParams.get("page");
+        if (
+          link.origin !== expected.origin ||
+          link.pathname !== expected.pathname ||
+          link.username ||
+          link.password ||
+          link.hash ||
+          !linkedPage ||
+          (next !== null && next !== linkedPage)
+        )
+          throw new Error("Invalid GitLab pagination link");
+        next = linkedPage;
+        const linkedSize = link.searchParams.get("per_page");
+        if (linkedSize !== null) {
+          if (!/^[1-9]\d*$/.test(linkedSize) || Number(linkedSize) > 100)
+            throw new Error("Invalid GitLab pagination page size");
+          perPage = Number(linkedSize);
+        }
+      }
+      if (next === "") return issues;
+      if (next !== null) {
+        const nextPage = Number(next);
+        if (
+          !/^[1-9]\d*$/.test(next) ||
+          !Number.isSafeInteger(nextPage) ||
+          nextPage <= page
+        )
+          throw new Error("Invalid GitLab next page");
+        page = nextPage;
+      } else {
+        if (items.length < perPage) return issues;
+        page++;
+      }
     }
     throw new Error("GitLab pagination limit reached");
   }
